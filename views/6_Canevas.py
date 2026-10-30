@@ -286,7 +286,7 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
 # --------------------------------------------------------------------------- #
 def main():
     st.set_page_config(page_title="Générateur Canevas ERP", page_icon="📄", layout="wide")
-    st.title("📄 Générateur de Canevas ERP & Tableau de Bord")
+    st.title("📄 Générateur de Canevas ERP")
     st.caption("Importez votre fichier : EXCHANGERATE double gérée avec succès.")
 
     with st.sidebar:
