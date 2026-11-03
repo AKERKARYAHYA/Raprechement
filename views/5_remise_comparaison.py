@@ -68,22 +68,13 @@ tolerance = st.sidebar.number_input("Définir la tolérance (Tolerance) :", min_
 
 # 🧠 Fonction intelligente et flexible pour détecter les colonnes
 def clean_string(text):
-    """Kay-naddaf s-smiya: kay-rejjad kolchi sghir, kay-ihyad l-espaces zaydin w l- رموز"""
     if not isinstance(text, str):
         text = str(text)
-    # Kay-hayd ga3 caractères spéciaux w kay-khalī ghir l-horof w l-arqam
     return re.sub(r'[^a-z0-9]', '', text.lower())
 
 def find_column_smart(df, possible_keywords):
-    """
-    Katchof s-smiya b 3 tariqat:
-    1. Exact match (case insensitive)
-    2. Substring match (wach s-smiya fiha dik l-kalima)
-    3. Fuzzy match / intelligent similarity (difflib)
-    """
     columns = list(df.columns)
     
-    # Étape 1: Check direct aw containing
     for col in columns:
         col_clean = clean_string(col)
         for keyword in possible_keywords:
@@ -91,7 +82,6 @@ def find_column_smart(df, possible_keywords):
             if kw_clean in col_clean or col_clean in kw_clean:
                 return col
 
-    # Étape 2: Fuzzy matching (ibtiqar dki l-aqrab)
     best_match = None
     highest_ratio = 0.0
     for col in columns:
@@ -103,11 +93,25 @@ def find_column_smart(df, possible_keywords):
                 highest_ratio = ratio
                 best_match = col
                 
-    # Ila kan l-qorb (similarity) aktar mn 40% (0.4) kan-qbloh
     if highest_ratio >= 0.4:
         return best_match
         
     return None
+
+def clean_amount(val):
+    """Fonction d'aide bach t-rdd ay montant float nqi b la-precision mzyana"""
+    if pd.isna(val):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    # Ila kan string, n-7aydo espaces w n-baddlo comma b point
+    val_str = str(val).strip().replace(' ', '').replace(',', '.')
+    # N-7aydo ga3 l-7orof ila kano la9yin (bhal MAD wla DH)
+    val_clean = re.sub(r'[^0-9.\-]', '', val_str)
+    try:
+        return float(val_clean)
+    except:
+        return 0.0
 
 st.markdown("")
 run_col = st.columns([1, 2, 1])[1]
@@ -162,6 +166,10 @@ if run_btn:
             elif date_col2:
                 df2_renamed = df2_renamed.rename(columns={date_col2: 'Date'})
             
+            # 🛡️ Conversion dial Amount l float b 7it ila kan text ghadi ytiro l-error li shftiti
+            df1_renamed['Amount'] = df1_renamed['Amount'].apply(clean_amount)
+            df2_renamed['Amount'] = df2_renamed['Amount'].apply(clean_amount)
+            
             # 1. Calcul des occurrences de Reference par table
             occ1 = df1_renamed['Reference'].value_counts().reset_index()
             occ1.columns = ['Reference', f'Occurrences_{file1_name}']
@@ -195,7 +203,7 @@ if run_btn:
             final_df = pd.merge(matched_df, occ1, on='Reference', how='left')
             final_df = pd.merge(final_df, occ2, on='Reference', how='left')
             
-            st.success("✅ Rapprochement effectué avec succès grâce à l'intelligence artificielle flexible !")
+            st.success("✅ Rapprochement effectué avec succès !")
             st.dataframe(final_df, use_container_width=True)
             
             # Génération du fichier Excel (.xlsx)
