@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import os
 import io
+import difflib
+import re
 
 # ─────────────────────────────────────────────
 # CONFIG & STYLES (Clean & Professional)
@@ -25,7 +27,6 @@ st.markdown("""
         padding-bottom: 0.3rem;
         margin: 1.2rem 0 0.8rem 0;
     }
-    /* Izalat l-khotot l-motaqatti3a (dashed borders) dyal uploader */
     div[data-testid="stFileUploader"] {
         border: none !important;
         padding: 0rem;
@@ -33,7 +34,6 @@ st.markdown("""
     div[data-testid="stFileUploader"] > section {
         border: none !important;
     }
-    /* Style dyal l-bouton zrayq (Bleu Roi #1e3a8a) */
     div.stButton > button {
         background-color: #1e3a8a !important;
         color: #ffffff !important;
@@ -66,11 +66,47 @@ with col2:
 st.sidebar.header("⚙️ Paramètres")
 tolerance = st.sidebar.number_input("Définir la tolérance (Tolerance) :", min_value=0.0, value=0.01, step=0.01, key="remise_tol")
 
-# Fonction intelligente pour détecter les colonnes
-def find_column(df, possible_names):
-    for col in df.columns:
-        if str(col).strip().lower() in [p.lower() for p in possible_names]:
-            return col
+# 🧠 Fonction intelligente et flexible pour détecter les colonnes
+def clean_string(text):
+    """Kay-naddaf s-smiya: kay-rejjad kolchi sghir, kay-ihyad l-espaces zaydin w l- رموز"""
+    if not isinstance(text, str):
+        text = str(text)
+    # Kay-hayd ga3 caractères spéciaux w kay-khalī ghir l-horof w l-arqam
+    return re.sub(r'[^a-z0-9]', '', text.lower())
+
+def find_column_smart(df, possible_keywords):
+    """
+    Katchof s-smiya b 3 tariqat:
+    1. Exact match (case insensitive)
+    2. Substring match (wach s-smiya fiha dik l-kalima)
+    3. Fuzzy match / intelligent similarity (difflib)
+    """
+    columns = list(df.columns)
+    
+    # Étape 1: Check direct aw containing
+    for col in columns:
+        col_clean = clean_string(col)
+        for keyword in possible_keywords:
+            kw_clean = clean_string(keyword)
+            if kw_clean in col_clean or col_clean in kw_clean:
+                return col
+
+    # Étape 2: Fuzzy matching (ibtiqar dki l-aqrab)
+    best_match = None
+    highest_ratio = 0.0
+    for col in columns:
+        col_clean = clean_string(col)
+        for keyword in possible_keywords:
+            kw_clean = clean_string(keyword)
+            ratio = difflib.SequenceMatcher(None, col_clean, kw_clean).ratio()
+            if ratio > highest_ratio:
+                highest_ratio = ratio
+                best_match = col
+                
+    # Ila kan l-qorb (similarity) aktar mn 40% (0.4) kan-qbloh
+    if highest_ratio >= 0.4:
+        return best_match
+        
     return None
 
 st.markdown("")
@@ -92,23 +128,26 @@ if run_btn:
             df1.columns = df1.columns.astype(str).str.strip()
             df2.columns = df2.columns.astype(str).str.strip()
             
-            # Détection dynamique des colonnes principales
-            ref_col1 = find_column(df1, ['reference', 'ref', 'code', 'référence'])
-            ref_col2 = find_column(df2, ['reference', 'ref', 'code', 'référence'])
+            # Détection intelligente des colonnes principales
+            ref_keywords = ['reference', 'ref', 'code', 'référence', 'num_chèque', 'num', 'n°']
+            amt_keywords = ['amount', 'montant', 'solde', 'prix', 'valeur', 'total', 'mnt']
+            date_keywords = ['date', 'date opération', 'date operation', 'date valeur', 'dt', 'date_op', 'jour']
+
+            ref_col1 = find_column_smart(df1, ref_keywords)
+            ref_col2 = find_column_smart(df2, ref_keywords)
             
-            amt_col1 = find_column(df1, ['amount', 'montant', 'solde', 'prix', 'valeur'])
-            amt_col2 = find_column(df2, ['amount', 'montant', 'solde', 'prix', 'valeur'])
+            amt_col1 = find_column_smart(df1, amt_keywords)
+            amt_col2 = find_column_smart(df2, amt_keywords)
             
-            # Détection avancée de la colonne Date
-            date_col1 = find_column(df1, ['date', 'date opération', 'date operation', 'date valeur', 'dt', 'date_op'])
-            date_col2 = find_column(df2, ['date', 'date opération', 'date operation', 'date valeur', 'dt', 'date_op'])
+            date_col1 = find_column_smart(df1, date_keywords)
+            date_col2 = find_column_smart(df2, date_keywords)
             
             if not ref_col1 or not ref_col2:
-                st.error("❌ Impossible de trouver la colonne 'Reference' dans l'un des deux fichiers.")
+                st.error(f"❌ Impossible de détecter la colonne 'Reference' automatiquement. (Trouvé ds ERP: {ref_col1}, ds RLV: {ref_col2})")
                 st.stop()
                 
             if not amt_col1 or not amt_col2:
-                st.error("❌ Impossible de trouver la colonne 'Amount / Montant' dans l'un des deux fichiers.")
+                st.error(f"❌ Impossible de détecter la colonne 'Amount / Montant' automatiquement. (Trouvé ds ERP: {amt_col1}, ds RLV: {amt_col2})")
                 st.stop()
             
             # Renommage temporaire pour le rapprochement
@@ -156,7 +195,7 @@ if run_btn:
             final_df = pd.merge(matched_df, occ1, on='Reference', how='left')
             final_df = pd.merge(final_df, occ2, on='Reference', how='left')
             
-            st.success("✅ Rapprochement effectué avec succès !")
+            st.success("✅ Rapprochement effectué avec succès grâce à l'intelligence artificielle flexible !")
             st.dataframe(final_df, use_container_width=True)
             
             # Génération du fichier Excel (.xlsx)
