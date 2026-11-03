@@ -27,6 +27,7 @@ st.markdown("""
         padding-bottom: 0.3rem;
         margin: 1.2rem 0 0.8rem 0;
     }
+    /* Izalat l-khotot l-motaqatti3a (dashed borders) dyal uploader */
     div[data-testid="stFileUploader"] {
         border: none !important;
         padding: 0rem;
@@ -34,6 +35,7 @@ st.markdown("""
     div[data-testid="stFileUploader"] > section {
         border: none !important;
     }
+    /* Style dyal l-bouton zrayq (Bleu Roi #1e3a8a) */
     div.stButton > button {
         background-color: #1e3a8a !important;
         color: #ffffff !important;
@@ -104,9 +106,7 @@ def clean_amount(val):
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    # Ila kan string, n-7aydo espaces w n-baddlo comma b point
     val_str = str(val).strip().replace(' ', '').replace(',', '.')
-    # N-7aydo ga3 l-7orof ila kano la9yin (bhal MAD wla DH)
     val_clean = re.sub(r'[^0-9.\-]', '', val_str)
     try:
         return float(val_clean)
@@ -166,7 +166,7 @@ if run_btn:
             elif date_col2:
                 df2_renamed = df2_renamed.rename(columns={date_col2: 'Date'})
             
-            # 🛡️ Conversion dial Amount l float b 7it ila kan text ghadi ytiro l-error li shftiti
+            # 🛡️ Conversion dial Amount l float b 7it ila kan text ghadi ytiro l-error
             df1_renamed['Amount'] = df1_renamed['Amount'].apply(clean_amount)
             df2_renamed['Amount'] = df2_renamed['Amount'].apply(clean_amount)
             
