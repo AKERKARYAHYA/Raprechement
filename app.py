@@ -72,7 +72,8 @@ pages = {
         st.Page("views/3_versement_caml.py", title="CAML", icon="📊", url_path="caml"),
         st.Page("views/4_ecarts_erp_rlv.py", title="Écarts ERP ↔ RLV", icon="📊", url_path="ecarts"),
         st.Page("views/5_remise_comparaison.py", title="Remise des chèques", icon="🔁", url_path="remise"),
-        st.Page("views/6_Canevas.py", title="Canevas", icon="📋", url_path="canevas"),
+        st.Page("views/6_Canevas.py", title="Vérsement Esp", icon="📋", url_path="canevas"),
+        st.Page("views/7_appFrais.py", title="Gestion Frais", icon="💶", url_path="app-frais"), 
     ]
 }
 
