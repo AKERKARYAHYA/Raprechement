@@ -7,7 +7,7 @@ import difflib
 import re
 
 # ─────────────────────────────────────────────
-# CONFIG & STYLES (Clean & Professional)
+# CONFIG & STYLES
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -27,7 +27,6 @@ st.markdown("""
         padding-bottom: 0.3rem;
         margin: 1.2rem 0 0.8rem 0;
     }
-    /* Izalat l-khotot l-motaqatti3a (dashed borders) dyal uploader */
     div[data-testid="stFileUploader"] {
         border: none !important;
         padding: 0rem;
@@ -35,7 +34,6 @@ st.markdown("""
     div[data-testid="stFileUploader"] > section {
         border: none !important;
     }
-    /* Style dyal l-bouton zrayq (Bleu Roi #1e3a8a) */
     div.stButton > button {
         background-color: #1e3a8a !important;
         color: #ffffff !important;
@@ -50,10 +48,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Title m-centré
 st.markdown('<div class="centered-header">📊 Remise des chèques</div>', unsafe_allow_html=True)
 
-# Section de chargement des fichiers
 col1, col2 = st.columns(2)
 
 with col1:
@@ -64,7 +60,6 @@ with col2:
     st.markdown('<div class="section-header">Fichier RLV</div>', unsafe_allow_html=True)
     file2 = st.file_uploader("Importer le fichier RLV (Excel/CSV)", type=["xlsx", "xls", "csv"], key="remise_f2")
 
-# Paramètres dans la barre latérale
 st.sidebar.header("⚙️ Paramètres")
 tolerance = st.sidebar.number_input("Définir la tolérance (Tolerance) :", min_value=0.0, value=0.01, step=0.01, key="remise_tol")
 
@@ -101,7 +96,6 @@ def find_column_smart(df, possible_keywords):
     return None
 
 def clean_amount(val):
-    """Fonction d'aide bach t-rdd ay montant float nqi b la-precision mzyana"""
     if pd.isna(val):
         return 0.0
     if isinstance(val, (int, float)):
@@ -128,13 +122,15 @@ if run_btn:
             df1 = pd.read_excel(file1) if file1.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file1)
             df2 = pd.read_excel(file2) if file2.name.endswith(('.xlsx', '.xls')) else pd.read_csv(file2)
             
-            # Nettoyage des noms de colonnes
+            # Nettoyage des noms de colonnes et suppression des doublons d'en-têtes
             df1.columns = df1.columns.astype(str).str.strip()
             df2.columns = df2.columns.astype(str).str.strip()
+            df1 = df1.loc[:, ~df1.columns.duplicated()]
+            df2 = df2.loc[:, ~df2.columns.duplicated()]
             
-            # Détection intelligente des colonnes principales
-            ref_keywords = ['reference', 'ref', 'code', 'référence', 'num_chèque', 'num', 'n°']
-            amt_keywords = ['amount', 'montant', 'solde', 'prix', 'valeur', 'total', 'mnt']
+            # Détection intelligente des colonnes principales (Mots clés élargis)
+            ref_keywords = ['reference', 'ref', 'code', 'référence', 'num_chèque', 'num', 'n°', 'cheque', 'chq']
+            amt_keywords = ['amount', 'montant', 'solde', 'prix', 'valeur', 'total', 'mnt', 'somme']
             date_keywords = ['date', 'date opération', 'date operation', 'date valeur', 'dt', 'date_op', 'jour']
 
             ref_col1 = find_column_smart(df1, ref_keywords)
@@ -154,23 +150,26 @@ if run_btn:
                 st.error(f"❌ Impossible de détecter la colonne 'Amount / Montant' automatiquement. (Trouvé ds ERP: {amt_col1}, ds RLV: {amt_col2})")
                 st.stop()
             
-            # Renommage temporaire pour le rapprochement
-            df1_renamed = df1.copy()
-            df2_renamed = df2.copy()
+            # 🛡️ Copie propre et standardisation des noms
+            df1_renamed = pd.DataFrame()
+            df2_renamed = pd.DataFrame()
             
-            df1_renamed = df1_renamed.rename(columns={ref_col1: 'Reference', amt_col1: 'Amount'})
-            df2_renamed = df2_renamed.rename(columns={ref_col2: 'Reference', amt_col2: 'Amount'})
+            df1_renamed['Reference'] = df1[ref_col1].astype(str).str.strip()
+            df2_renamed['Reference'] = df2[ref_col2].astype(str).str.strip()
             
+            df1_renamed['Amount'] = df1[amt_col1].apply(clean_amount)
+            df2_renamed['Amount'] = df2[amt_col2].apply(clean_amount)
+            
+            # Gestion sécurisée des dates
             if date_col1:
-                df1_renamed = df1_renamed.rename(columns={date_col1: 'Date'})
-            elif date_col2:
-                df2_renamed = df2_renamed.rename(columns={date_col2: 'Date'})
+                df1_renamed['Date'] = df1[date_col1]
+            else:
+                df1_renamed['Date'] = "N/A"
+                
+            if date_col2 and not date_col1:
+                df2_renamed['Date'] = df2[date_col2]
             
-            # 🛡️ Conversion dial Amount l float b 7it ila kan text ghadi ytiro l-error
-            df1_renamed['Amount'] = df1_renamed['Amount'].apply(clean_amount)
-            df2_renamed['Amount'] = df2_renamed['Amount'].apply(clean_amount)
-            
-            # 1. Calcul des occurrences de Reference par table
+            # 1. Calcul rigoureux des occurrences sans erreur de dimension
             occ1 = df1_renamed['Reference'].value_counts().reset_index()
             occ1.columns = ['Reference', f'Occurrences_{file1_name}']
             
@@ -184,7 +183,7 @@ if run_btn:
             # Filtrage selon la tolérance
             matched_df = merged[merged['Ecart'] <= tolerance].copy()
             
-            # Gestion de la colonne Date dans le résultat
+            # Attribuer la date finale
             if 'Date' in matched_df.columns:
                 matched_df['Date_Final'] = matched_df['Date']
             elif 'Date_t1' in matched_df.columns:
@@ -199,7 +198,7 @@ if run_btn:
             
             matched_df = matched_df[['Date', 'Reference', 'Amount', 'Ecart']].drop_duplicates()
             
-            # 3. Construction de la table finale avec les occurrences
+            # 3. Construction de la table finale avec les occurrences (bien structurée)
             final_df = pd.merge(matched_df, occ1, on='Reference', how='left')
             final_df = pd.merge(final_df, occ2, on='Reference', how='left')
             
@@ -212,7 +211,6 @@ if run_btn:
                 final_df.to_excel(writer, index=False, sheet_name='Matching_Résultat')
             buffer.seek(0)
             
-            # Bouton de téléchargement
             st.download_button(
                 label="📥 Télécharger le résultat (Fichier Excel .xlsx)",
                 data=buffer,
@@ -223,4 +221,4 @@ if run_btn:
         except Exception as e:
             st.error(f"Une erreur s'est produite lors du traitement : {str(e)}")
     else:
-        st.warning("⚠️ Veuillez charger les deux fichiers (ERP et RLV) pour continuer.")
+        st.warning("⚠️ Veuillez charger les two fichiers (ERP et RLV) pour continuer.")
