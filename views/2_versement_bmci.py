@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-BMCI Bank Reconciliation — Streamlit application
-================================================
-Two-phase ERP ⇄ RLV (bank statement) reconciliation with strict chronological
-and weekday constraints.
+BMCI Bank Reconciliation — Streamlit application (4 Phases)
+============================================================
+Phases 1–3 : Reference/amount, "versement esp" combos, and multi-ERP-to-single-RLV
+             with standard weekday/next-day date rules.
+Phase 4    : Remaining unmatched rows using same city in ERP description and
+             date difference up to 7 days (highlighted in light red for manual review).
 """
 
 import io
@@ -17,6 +19,16 @@ import pandas as pd
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+
+
+# ============================================================================
+#  Colors & Constants
+# ============================================================================
+MAX_PHASE4_DAYS = 7
+
+FILL_PHASE4_LIGHT_RED = PatternFill("solid", fgColor="ffd700")  # أحمر خفيف لـ Phase 4 (مراجعة يدوية)
+FILL_MATCHED_GREEN = PatternFill("solid", fgColor="349908")     # أخضر للمتطابق في المراحل 1-3
+FILL_UNMATCHED_RED = PatternFill("solid", fgColor="ff0100")     # أحمر لغير المتطابق في RLV
 
 
 # ============================================================================
@@ -61,6 +73,25 @@ def parse_date_val(v):
     return pd.to_datetime(s, dayfirst=True, errors="coerce")
 
 
+def extract_city_from_erp_desc(desc_text: str) -> str:
+    """
+    استخراج اسم المدينة من وصف ERP قدر الإمكان:
+    - يبحث عن كلمات بعد 'ville' / 'agence' / 'site' / '-' أو يأخذ آخر جزء نصي نظيف.
+    """
+    norm = deaccent(desc_text)
+    if not norm:
+        return ""
+    m = re.search(r"\b(?:ville|agence|site|agency|city)\s*[:\-]?\s*([a-z0-9_\- ]{2,25})", norm)
+    if m:
+        return re.sub(r"\s+", " ", m.group(1)).strip()
+    parts = [p.strip() for p in re.split(r"[|\-/;,]+", norm) if p.strip()]
+    for part in reversed(parts):
+        words = [w for w in re.findall(r"[a-z]{3,}", part) if w not in ("versement", "especes", "esp", "vir", "virement", "chq", "cheque", "ref", "num")]
+        if words:
+            return " ".join(words[-2:])
+    return ""
+
+
 def read_upload(upload):
     name = upload.name.lower()
     if name.endswith((".xlsx", ".xlsm", ".xls")):
@@ -72,7 +103,7 @@ def read_upload(upload):
     return pd.read_csv(upload, sep=None, engine="python")
 
 
-def prepare(df: pd.DataFrame) -> pd.DataFrame:
+def prepare(df: pd.DataFrame):
     cols = list(df.columns)
     date_c = find_col(cols, "date")
     cred_c = find_col(cols, "cred")
@@ -88,9 +119,13 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
                  and not pd.api.types.is_datetime64_any_dtype(df[c])]
     out["desc"] = df[text_cols].astype(str).agg(" | ".join, axis=1) if text_cols else ""
     out["desc_lower"] = out["desc"].map(deaccent)
+    out["city_erp"] = out["desc"].map(extract_city_from_erp_desc)
     out["cents"] = (out["credit"] * 100).round().astype("int64")
-    out = out[out["credit"] > 0].reset_index(drop=True)
-    return out
+
+    valid_mask = out["credit"] > 0
+    raw_valid = df.loc[valid_mask].reset_index(drop=True)
+    out = out.loc[valid_mask].reset_index(drop=True)
+    return out, raw_valid, cred_c
 
 
 def date_ok(ed, rd) -> bool:
@@ -99,6 +134,18 @@ def date_ok(ed, rd) -> bool:
     if ed.weekday() == 5:
         return rd == ed + pd.Timedelta(days=2)
     return rd == ed or rd == ed + pd.Timedelta(days=1)
+
+
+def date_ok_phase4(ed, rd) -> bool:
+    if pd.isna(ed) or pd.isna(rd):
+        return False
+    return 0 <= abs((rd - ed).days) <= MAX_PHASE4_DAYS
+
+
+def allowed_dates_phase4(ed):
+    if pd.isna(ed):
+        return []
+    return [ed + pd.Timedelta(days=d) for d in range(0, MAX_PHASE4_DAYS + 1)]
 
 
 def find_combo(items, target, kmin=2, kmax=8, guard=2_000_000):
@@ -128,7 +175,7 @@ def find_combo(items, target, kmin=2, kmax=8, guard=2_000_000):
 
 
 # ============================================================================
-#  Reconciliation engine
+#  Reconciliation engine (Phases 1–3 + Phase 4)
 # ============================================================================
 def reconcile(erp: pd.DataFrame, rlv: pd.DataFrame):
     erp_matched, rlv_matched, matches = set(), set(), []
@@ -138,6 +185,7 @@ def reconcile(erp: pd.DataFrame, rlv: pd.DataFrame):
     for ri in rlv.index:
         rlv_by_amt[rlv.at[ri, "cents"]].append(ri)
 
+    # ── Phase 1 ──
     for ei in erp.index:
         ref = erp.at[ei, "reference"]
         ed = erp.at[ei, "date"]
@@ -155,6 +203,7 @@ def reconcile(erp: pd.DataFrame, rlv: pd.DataFrame):
             mid += 1
             matches.append({"mid": mid, "type": "Phase 1", "erp": [ei], "rlv": [ri]})
 
+    # ── Phase 2 ──
     groups = defaultdict(lambda: {"cents": 0, "idx": []})
     for i in erp.index:
         if i in erp_matched or pd.isna(erp.at[i, "date"]):
@@ -214,6 +263,7 @@ def reconcile(erp: pd.DataFrame, rlv: pd.DataFrame):
                 mid += 1
                 matches.append({"mid": mid, "type": "Phase 2", "erp": list(idxs), "rlv": combo})
 
+    # ── Phase 3 ──
     groups3 = defaultdict(lambda: {"cents": 0, "idx": []})
     for i in erp.index:
         if i in erp_matched or pd.isna(erp.at[i, "date"]) or not erp.at[i, "reference"]:
@@ -237,14 +287,91 @@ def reconcile(erp: pd.DataFrame, rlv: pd.DataFrame):
             mid += 1
             matches.append({"mid": mid, "type": "Phase 3", "erp": list(g["idx"]), "rlv": [ri]})
 
+    # ── Phase 4: Same ERP city + date gap up to 7 days on remaining rows ──
+    # 4A: Single ERP row with reference + same city + date within 7 days
+    for ei in erp.index:
+        if ei in erp_matched or pd.isna(erp.at[ei, "date"]):
+            continue
+        ed = erp.at[ei, "date"]
+        ref_l = deaccent(erp.at[ei, "reference"])
+        cands = [
+            ri for ri in rlv_by_amt.get(erp.at[ei, "cents"], [])
+            if ri not in rlv_matched
+            and date_ok_phase4(ed, rlv.at[ri, "date"])
+            and (not ref_l or ref_l in rlv.at[ri, "desc_lower"])
+        ]
+        if cands:
+            ri = min(cands, key=lambda x: (abs((rlv.at[x, "date"] - ed).days), rlv.at[x, "date"], x))
+            erp_matched.add(ei)
+            rlv_matched.add(ri)
+            mid += 1
+            matches.append({"mid": mid, "type": "Phase 4", "erp": [ei], "rlv": [ri]})
+
+    # 4B: ERP groups sharing (date, reference, city_erp) matched to RLV combos within 7 days
+    groups4 = defaultdict(lambda: {"cents": 0, "idx": []})
+    for i in erp.index:
+        if i in erp_matched or pd.isna(erp.at[i, "date"]):
+            continue
+        key4 = (erp.at[i, "date"], erp.at[i, "reference"], erp.at[i, "city_erp"])
+        groups4[key4]["cents"] += erp.at[i, "cents"]
+        groups4[key4]["idx"].append(i)
+
+    rem_rlv_by_date = defaultdict(list)
+    for ri in rlv.index:
+        if ri not in rlv_matched and not pd.isna(rlv.at[ri, "date"]):
+            rem_rlv_by_date[rlv.at[ri, "date"]].append(ri)
+
+    def try_match_p4(target, ed):
+        for rd in allowed_dates_phase4(ed):
+            rows = [ri for ri in rem_rlv_by_date.get(rd, []) if ri not in rlv_matched]
+            if len(rows) >= 2:
+                combo = find_combo([(ri, rlv.at[ri, "cents"]) for ri in rows], target)
+                if combo:
+                    return combo
+        return None
+
+    for key4 in sorted(groups4, key=lambda k: (k[0], str(k[1]), str(k[2]))):
+        date, _, _ = key4
+        g = groups4[key4]
+        if any(i in erp_matched for i in g["idx"]):
+            continue
+        combo = try_match_p4(g["cents"], date)
+        if combo:
+            for i in g["idx"]:
+                erp_matched.add(i)
+            for ri in combo:
+                rlv_matched.add(ri)
+            mid += 1
+            matches.append({"mid": mid, "type": "Phase 4", "erp": list(g["idx"]), "rlv": combo})
+
+    # 4C: Multi-row ERP group sharing (date, reference, city_erp) -> single RLV row within 7 days
+    for key4 in sorted(groups4, key=lambda k: (k[0], str(k[1]), str(k[2]))):
+        date, _, _ = key4
+        g = groups4[key4]
+        if len(g["idx"]) < 2 or any(i in erp_matched for i in g["idx"]):
+            continue
+        cands = [
+            ri for ri in rlv_by_amt.get(g["cents"], [])
+            if ri not in rlv_matched and date_ok_phase4(date, rlv.at[ri, "date"])
+        ]
+        if cands:
+            ri = min(cands, key=lambda x: (abs((rlv.at[x, "date"] - date).days), rlv.at[x, "date"], x))
+            for i in g["idx"]:
+                erp_matched.add(i)
+            rlv_matched.add(ri)
+            mid += 1
+            matches.append({"mid": mid, "type": "Phase 4", "erp": list(g["idx"]), "rlv": [ri]})
+
     return matches, erp_matched, rlv_matched
 
 
 # ============================================================================
 #  Output workbook
 # ============================================================================
-def build_outputs(erp, rlv, matches, erp_matched, rlv_matched):
+def build_outputs(erp, rlv, rlv_raw, rlv_cred_col, matches, erp_matched, rlv_matched):
     mrows = []
+    phase4_row_indices = set()
+
     for m in matches:
         e_idx, r_idx = m["erp"], m["rlv"]
         e_tot = round(sum(erp.at[i, "credit"] for i in e_idx), 2)
@@ -266,23 +393,35 @@ def build_outputs(erp, rlv, matches, erp_matched, rlv_matched):
             row["ERP Total"] = e_tot if k == 0 else None
             row["RLV Total"] = r_tot if k == 0 else None
             mrows.append(row)
+            if m["type"] == "Phase 4":
+                phase4_row_indices.add(len(mrows))  # 1-based after header -> +1 in Excel
+
     matched_df = pd.DataFrame(mrows, columns=["Match ID", "Match Type", "ERP Date", "ERP Référence",
                                               "ERP Crédit", "RLV Date", "RLV Description", "RLV Crédit",
                                               "ERP Total", "RLV Total"])
 
-    urows = [{"Source": "ERP", "Date": erp.at[i, "date"], "Référence": erp.at[i, "reference"],
-              "Description": erp.at[i, "desc"], "Crédit": erp.at[i, "credit"]}
-             for i in erp.index if i not in erp_matched]
-    urows += [{"Source": "RLV", "Date": rlv.at[j, "date"], "Référence": rlv.at[j, "reference"],
-               "Description": rlv.at[j, "desc"], "Crédit": rlv.at[j, "credit"]}
-              for j in rlv.index if j not in rlv_matched]
-    unmatched_df = pd.DataFrame(urows, columns=["Source", "Date", "Référence", "Description", "Crédit"])
+    # خريطة نوع التطابق لكل سطر في RLV
+    rlv_type_map = {}
+    for m in matches:
+        for ri in m["rlv"]:
+            rlv_type_map[ri] = m["type"]
+
+    # الورقة الثانية: RLV كامل كما رفعه المستخدم
+    rlv_full_df = rlv_raw.copy().reset_index(drop=True)
+
+    unmatched_erp_df = pd.DataFrame([
+        {"Source": "ERP", "Date": erp.at[i, "date"], "Référence": erp.at[i, "reference"],
+         "Description": erp.at[i, "desc"], "Crédit": erp.at[i, "credit"]}
+        for i in erp.index if i not in erp_matched
+    ], columns=["Source", "Date", "Référence", "Description", "Crédit"])
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl", datetime_format="dd/mm/yyyy") as xl:
         matched_df.to_excel(xl, sheet_name="Matched_Results", index=False)
-        unmatched_df.to_excel(xl, sheet_name="Unmatched_Data", index=False)
+        rlv_full_df.to_excel(xl, sheet_name="RLV_Complet", index=False)
+        unmatched_erp_df.to_excel(xl, sheet_name="Unmatched_ERP", index=False)
     buf.seek(0)
+
     wb = load_workbook(buf)
     navy, white = "1F3864", "FFFFFF"
     for ws in wb.worksheets:
@@ -297,9 +436,33 @@ def build_outputs(erp, rlv, matches, erp_matched, rlv_matched):
                 if isinstance(cell.value, (int, float)):
                     cell.number_format = "#,##0.00"
         ws.freeze_panes = "A2"
+
+    # تلوين سطور Phase 4 بالأحمر الخفيف في ورقة Matched_Results
+    ws_matched = wb["Matched_Results"]
+    for idx_0based in phase4_row_indices:
+        excel_row = idx_0based + 1
+        for c in range(1, ws_matched.max_column + 1):
+            ws_matched.cell(excel_row, c).fill = FILL_PHASE4_LIGHT_RED
+
+    # تلوين خلية Crédit فقط في ورقة RLV_Complet
+    ws_rlv = wb["RLV_Complet"]
+    rlv_headers = [ws_rlv.cell(1, c).value for c in range(1, ws_rlv.max_column + 1)]
+    credit_col_idx = (rlv_headers.index(rlv_cred_col) + 1) if rlv_cred_col in rlv_headers else None
+
+    if credit_col_idx:
+        for r_idx in range(len(rlv_full_df)):
+            excel_row = r_idx + 2
+            mtype = rlv_type_map.get(r_idx)
+            if mtype == "Phase 4":
+                ws_rlv.cell(excel_row, credit_col_idx).fill = FILL_PHASE4_LIGHT_RED
+            elif mtype in ("Phase 1", "Phase 2", "Phase 3"):
+                ws_rlv.cell(excel_row, credit_col_idx).fill = FILL_MATCHED_GREEN
+            else:
+                ws_rlv.cell(excel_row, credit_col_idx).fill = FILL_UNMATCHED_RED
+
     out = io.BytesIO()
     wb.save(out)
-    return out.getvalue(), matched_df, unmatched_df
+    return out.getvalue(), matched_df, rlv_full_df, unmatched_erp_df
 
 
 # ============================================================================
@@ -330,7 +493,6 @@ st.markdown("""
     div[data-testid="stFileUploader"] > section {
         border: none !important;
     }
-    /* Style dyal l-bouton zrayq (Bleu Roi #1e3a8a) */
     div.stButton > button {
         background-color: #1e3a8a !important;
         color: #ffffff !important;
@@ -364,34 +526,46 @@ if run_btn:
     if erp_up and rlv_up:
         try:
             with st.spinner("Rapprochement en cours…"):
-                erp = prepare(read_upload(erp_up))
-                rlv = prepare(read_upload(rlv_up))
+                erp, _, _ = prepare(read_upload(erp_up))
+                rlv, rlv_raw, rlv_cred_col = prepare(read_upload(rlv_up))
                 matches, em, rm = reconcile(erp, rlv)
-                xlsx_bytes, matched_df, unmatched_df = build_outputs(erp, rlv, matches, em, rm)
+                xlsx_bytes, matched_df, rlv_full_df, unmatched_erp_df = build_outputs(
+                    erp, rlv, rlv_raw, rlv_cred_col, matches, em, rm
+                )
 
             p1 = sum(1 for m in matches if m["type"] == "Phase 1")
             p2 = sum(1 for m in matches if m["type"] == "Phase 2")
             p3 = sum(1 for m in matches if m["type"] == "Phase 3")
+            p4 = sum(1 for m in matches if m["type"] == "Phase 4")
             esp_n = int(rlv["desc_lower"].str.contains("versement esp").sum())
 
-            k = st.columns(6)
+            k = st.columns(7)
             k[0].metric("Crédits ERP", len(erp))
             k[1].metric("Crédits RLV", len(rlv))
-            k[2].metric("Matchs Phase 1", p1)
-            k[3].metric("Matchs Phase 2", p2)
-            k[4].metric("Matchs Phase 3", p3)
-            k[5].metric("Non rapprochés", f"{len(erp) - len(em)} / {len(rlv) - len(rm)}",
-                        help="ERP non rapprochés / RLV non rapprochés")
+            k[2].metric("Phase 1", p1)
+            k[3].metric("Phase 2", p2)
+            k[4].metric("Phase 3", p3)
+            k[5].metric("Phase 4 (≤7j)", p4)
+            k[6].metric("Non rapprochés", f"{len(erp) - len(em)} / {len(rlv) - len(rm)}")
 
             st.caption(f"Lignes RLV contenant « VERSEMENT ESP » : {esp_n}")
 
             st.subheader("✅ Matched_Results")
-            st.dataframe(matched_df, use_container_width=True, hide_index=True)
-            st.subheader("⚠️ Unmatched_Data")
-            st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
+            def highlight_p4(row):
+                if row["Match Type"] == "Phase 4":
+                    return ["background-color: #FADBD8"] * len(row)
+                return [""] * len(row)
+
+            st.dataframe(matched_df.style.apply(highlight_p4, axis=1), use_container_width=True, hide_index=True)
+
+            st.subheader("📄 RLV_Complet")
+            st.dataframe(rlv_full_df, use_container_width=True, hide_index=True)
+
+            st.subheader("⚠️ Unmatched_ERP")
+            st.dataframe(unmatched_erp_df, use_container_width=True, hide_index=True)
 
             st.download_button(
-                "⬇️ Télécharger le rapprochement (Excel — 2 feuilles)",
+                "⬇️ Télécharger le rapprochement (Excel)",
                 data=xlsx_bytes,
                 file_name="BMCI_Reconciliation.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
