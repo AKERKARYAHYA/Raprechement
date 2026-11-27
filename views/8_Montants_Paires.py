@@ -24,8 +24,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 TrésoMatch Pro — Rapprochement & Appariement des Montants")
-st.write("Importez votre fichier Excel pour identifier automatiquement chaque montant positif (+) et son écriture d'annulation (-), puis exportez uniquement les paires rapprochées avec une mise en couleur distincte.")
+st.title("📊 Détection Automatique des Annulations d'Écritures")
+st.write("Détectez instantanément les montants annulés et leurs contreparties.")
 
 
 def detect_amount_column(df: pd.DataFrame) -> str | None:
