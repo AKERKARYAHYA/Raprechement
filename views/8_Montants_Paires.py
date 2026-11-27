@@ -24,21 +24,21 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 نظام تنظيم وتطابق المبالغ الاحترافي (Plus / Moins)")
-st.write("قم بتحميل ملف Excel، وسيقوم النظام باختيار المبالغ المتطابقة فقط وتلوين كل زوج (Pair) بلون مميز لسهولة المراجعة.")
+st.title("📊 Détection Automatique des Annulations d'Écritures")
+st.write("Détectez instantanément les montants annulés et leurs contreparties.")
 
-uploaded_file = st.file_uploader("اختر ملف Excel للعمليات", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("📂 Charger les écritures à analyser", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
     df = pd.read_excel(uploaded_file)
     
-    with st.expander("📄 معاينة البيانات الأصلية"):
+    with st.expander"📄 Aperçu des données"):
         st.dataframe(df.head(), use_container_width=True)
 
     col_names = df.columns.tolist()
     amount_col = st.selectbox("🎯 اختر الخانة (Colonne) اللي فيها les montants:", col_names)
 
-    if st.button("🚀 بدء المعالجة والتنظيم الذكي"):
+    if st.button("🚀 Lancer l'analyse intelligente"):
         data = df.copy()
         data[amount_col] = pd.to_numeric(data[amount_col], errors='coerce').fillna(0)
 
